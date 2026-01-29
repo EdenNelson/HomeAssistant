@@ -1,0 +1,74 @@
+blueprint:
+  name: Sensor Attribute Update Monitor
+  description: >-
+    Send a notification if a sensor's attribute doesn't update for a specified number of hours.
+    This blueprint monitors a selected sensor attribute and triggers a notification when no update
+    has been detected within the user-defined time period.
+  domain: automation
+  source_url: https://github.com/homeassistant/blueprint-examples
+
+blueprint:
+  input:
+    sensor_entity:
+      name: Sensor Entity
+      description: The sensor entity to monitor
+      selector:
+        entity:
+          domain: sensor
+
+    attribute_name:
+      name: Attribute Name
+      description: The attribute of the sensor to monitor (leave empty to monitor entire entity state)
+      selector:
+        text:
+      default: ""
+
+    hours_threshold:
+      name: Hours Threshold
+      description: Number of hours after which to trigger the notification if no update occurred
+      selector:
+        number:
+          min: 0.5
+          max: 168
+          step: 0.5
+          unit_of_measurement: "hours"
+      default: 24
+
+    notification_service:
+      name: Notification Service
+      description: The notification service to use (e.g., notify.mobile_app_your_device)
+      selector:
+        text:
+      default: ""
+
+    notification_title:
+      name: Notification Title
+      description: Title for the notification
+      selector:
+        text:
+      default: "Sensor Update Alert"
+
+    notification_message:
+      name: Notification Message
+      description: Message body for the notification
+      selector:
+        text:
+      default: "Sensor attribute has not been updated"
+
+trigger:
+  - platform: state
+    entity_id: !input sensor_entity
+    attribute: !input attribute_name
+    for:
+      hours: !input hours_threshold
+
+condition: []
+
+action:
+  - service: !input notification_service
+    data:
+      title: !input notification_title
+      message: !input notification_message
+      data:
+        tag: sensor_update_alert
+        group: sensor_alerts
