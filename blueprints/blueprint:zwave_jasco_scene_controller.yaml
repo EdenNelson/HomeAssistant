@@ -1,0 +1,249 @@
+blueprint:
+  name: Z-Wave Scene Controller (Jasco/GE/Enbrighten)
+  description: >-
+    A reusable automation for Jasco/GE/Enbrighten Z-Wave switches that support Central Scene commands.
+    This blueprint combines multiple button actions into a single automation.
+
+    - Up (1x Press): Turns on the 'Main Light(s)'
+    - Down (1x Press): Turns off the 'Main Light(s)'
+    - Up (Hold): Turns on 'All Lights' in the target area/group.
+    - Down (Hold): Turns off 'All Lights' in the target area/group.
+    - Up (2x Press): Activates 'Task Lighting' (turns on secondary, turns off main).
+    - Down (2x Press): Deactivates 'Task Lighting' (turns off secondary, turns on main).
+    - Up (3x Press): Turns on 'All Lights' to 100% brightness.
+    - Down (3x Press): Turns on selected 'Night Lights' to a dim brightness.
+
+  domain: automation
+  source_url: https://community.home-assistant.io/t/reusable-z-wave-scene-control-blueprint-for-jasco-ge-switches/12345
+
+  input:
+    controller_switch:
+      name: Controller Switch
+      description: "Select the Z-Wave switch that supports Central Scene commands (e.g., Jasco, GE, Enbrighten, Honeywell)."
+      selector:
+        device: {}
+    
+    main_light:
+      name: Main Target
+      description: The primary light(s) or switch(es) to be controlled by single up/down presses.
+      selector:
+        target:
+
+    area_target:
+      name: Area Target
+      description: The target for hold and triple-press up actions. This can be an Area or a group of lights and switches.
+      selector:
+        target:
+
+    full_brightness_kelvin:
+      name: "Full Brightness: Color Temperature"
+      description: The color temperature (in Kelvin) for the 'All Lights On Full' action (triple-press up).
+      default: 4000
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: "K"
+
+    night_light_lights_target:
+      name: "Night Light: Lights Target"
+      description: "(Optional) Lights to turn on for the 'Night Light' scene (triple-press down)."
+      selector:
+        target:
+          entity:
+            domain: light
+      default: {}
+            
+    night_light_switches_target:
+      name: "Night Light: Switches Target"
+      description: "(Optional) Switches to turn on for the 'Night Light' scene (triple-press down)."
+      selector:
+        target:
+          entity:
+            domain: switch
+      default: {}
+
+    night_light_rgb_target:
+      name: "Night Light: RGB Lights Target"
+      description: "(Optional) RGB lights to turn on for the 'Night Light' scene (triple-press down)."
+      selector:
+        target:
+          entity:
+            domain: light
+      default: {}
+
+    night_light_brightness:
+      name: "Night Light: Brightness"
+      description: The brightness percentage for the 'Night Light' scene.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    night_light_kelvin:
+      name: "Night Light: Color Temperature"
+      description: The color temperature (in Kelvin) for the 'Night Light' scene.
+      default: 2000
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: "K"
+
+    night_light_color_name:
+      name: "Night Light: Color Name"
+      description: "The color to set for RGB lights in the Night Light scene."
+      default: "red"
+      selector:
+        text:
+
+    task_light_lights_target:
+      name: "Task Lighting: Lights Target"
+      description: "(Optional) Secondary lights to turn on for Task Lighting mode (double-press up)."
+      selector:
+        target:
+          entity:
+            domain: light
+      default: {}
+
+    task_light_switches_target:
+      name: "Task Lighting: Switches Target"
+      description: "(Optional) Secondary switches to turn on for Task Lighting mode (double-press up)."
+      selector:
+        target:
+          entity:
+            domain: switch
+      default: {}
+
+    task_light_brightness:
+      name: "Task Lighting: Brightness"
+      description: The brightness percentage for the 'Task Lighting' scene.
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    task_light_kelvin:
+      name: "Task Lighting: Color Temperature"
+      description: The color temperature (in Kelvin) for the 'Task Lighting' scene.
+      default: 3000
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: "K"
+
+# This mode ensures that if you press buttons quickly, each press is handled
+# in sequence without interrupting the previous one.
+mode: queued
+max_exceeded: silent
+
+trigger:
+  # This trigger listens for any Central Scene event from the selected switch.
+  - platform: event
+    event_type: zwave_js_value_notification
+    event_data:
+      command_class_name: Central Scene
+      device_id: !input controller_switch
+
+action:
+  # The 'choose' action allows us to perform different actions based on which button was pressed.
+  - choose:
+      # === UP (1x Press) -> Main Light ON ===
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.property_key == '001' and trigger.event.data.value_raw == 0 }}"
+        sequence:
+          - service: homeassistant.turn_on
+            target: !input main_light
+            data:
+              transition: 1
+
+      # === DOWN (1x Press) -> Main Light OFF ===
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.property_key == '002' and trigger.event.data.value_raw == 0 }}"
+        sequence:
+          - service: homeassistant.turn_off
+            target: !input main_light
+            data:
+              transition: 1
+
+      # === UP (Hold) -> All Lights ON ===
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.property_key == '001' and trigger.event.data.value_raw == 2 }}"
+        sequence:
+          - service: homeassistant.turn_on
+            target: !input area_target
+
+      # === DOWN (Hold) -> All Lights OFF ===
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.property_key == '002' and trigger.event.data.value_raw == 2 }}"
+        sequence:
+          - service: homeassistant.turn_off
+            target: !input area_target
+
+      # === UP (2x Press) -> Task Lighting Scene ===
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.property_key == '001' and trigger.event.data.value_raw == 3 }}"
+        sequence:
+          - service: homeassistant.turn_off
+            target: !input main_light
+          - service: light.turn_on
+            target: !input task_light_lights_target
+            data:
+              brightness_pct: !input task_light_brightness
+              kelvin: !input task_light_kelvin
+          - service: switch.turn_on
+            target: !input task_light_switches_target
+
+      # === DOWN (2x Press) -> End Task Lighting ===
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.property_key == '002' and trigger.event.data.value_raw == 3 }}"
+        sequence:
+          - service: light.turn_off
+            target: !input task_light_lights_target
+          - service: switch.turn_off
+            target: !input task_light_switches_target
+          - service: homeassistant.turn_on
+            target: !input main_light
+
+      # === UP (3x Press) -> All Lights ON FULL BRIGHTNESS ===
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.property_key == '001' and trigger.event.data.value_raw == 4 }}"
+        sequence:
+          - service: light.turn_on
+            target: !input area_target
+            data:
+              brightness_pct: 100
+              kelvin: !input full_brightness_kelvin
+
+      # === DOWN (3x Press) -> Night Light Scene ===
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.property_key == '002' and trigger.event.data.value_raw == 4 }}"
+        sequence:
+          - service: light.turn_on
+            target: !input night_light_lights_target
+            data:
+              brightness_pct: !input night_light_brightness
+              kelvin: !input night_light_kelvin
+          - service: switch.turn_on
+            target: !input night_light_switches_target
+          - service: light.turn_on
+            target: !input night_light_rgb_target
+            data:
+              brightness_pct: !input night_light_brightness
+              color_name: !input night_light_color_name

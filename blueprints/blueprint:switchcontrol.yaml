@@ -1,0 +1,49 @@
+blueprint:
+  name: Link Switch to Device (Sync State)
+  description: >
+    Turn a target device (light, switch, etc.) ON when a source switch (like a Z-Wave wall switch) is turned ON, 
+    and turn it OFF when the source switch is turned OFF.
+
+    This effectively "slaves" the target device to the source switch.
+  domain: automation
+  input:
+    source_switch:
+      name: Source Switch
+      description: The Master switch (e.g., your Z-Wave switch).
+      selector:
+        entity:
+          domain: switch
+    target_devices:
+      name: Target Device(s)
+      description: The device(s) to sync with the source switch.
+      selector:
+        target:
+
+# Trigger when the source switch changes state
+trigger:
+  - platform: state
+    entity_id: !input source_switch
+    to:
+      - "on"
+      - "off"
+
+# check the new state of the switch and apply it to the target
+action:
+  - choose:
+      # If source is ON, turn target ON
+      - conditions:
+          - condition: state
+            entity_id: !input source_switch
+            state: "on"
+        sequence:
+          - service: home_assistant.turn_on
+            target: !input target_devices
+
+      # If source is OFF, turn target OFF
+      - conditions:
+          - condition: state
+            entity_id: !input source_switch
+            state: "off"
+        sequence:
+          - service: home_assistant.turn_off
+            target: !input target_devices

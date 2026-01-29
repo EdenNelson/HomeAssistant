@@ -1,0 +1,58 @@
+blueprint:
+  name: Turn on at Sunset, off at Sunrise
+  description: >
+    Turn on selected lights or switches when the sun sets and turn them off when
+    the sun rises. You can also set offsets (e.g., trigger 30 minutes before sunset).
+  domain: automation
+  input:
+    target_devices:
+      name: Lights or Switches
+      description: The devices to control.
+      selector:
+        target:
+          entity:
+            domain:
+              - light
+              - switch
+    sunset_offset:
+      name: Sunset Offset
+      description: >
+        Offset the sunset trigger time. Use format HH:MM:SS or -HH:MM:SS.
+        Example: "-00:30:00" triggers 30 minutes before sunset.
+      default: "00:00:00"
+      selector:
+        text: {}
+    sunrise_offset:
+      name: Sunrise Offset
+      description: >
+        Offset the sunrise trigger time. Use format HH:MM:SS or -HH:MM:SS.
+        Example: "00:30:00" triggers 30 minutes after sunrise.
+      default: "00:00:00"
+      selector:
+        text: {}
+
+trigger:
+  - platform: sun
+    event: sunset
+    offset: !input sunset_offset
+    id: sunset_event
+  - platform: sun
+    event: sunrise
+    offset: !input sunrise_offset
+    id: sunrise_event
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: sunset_event
+        sequence:
+          - service: homeassistant.turn_on
+            target: !input target_devices
+      - conditions:
+          - condition: trigger
+            id: sunrise_event
+        sequence:
+          - service: homeassistant.turn_off
+            target: !input target_devices
+mode: restart

@@ -1,0 +1,179 @@
+blueprint:
+  name: Seasonal Area Curtain Control (Workday Aware)
+  description: >
+    Opens and closes covers (curtains/blinds) in a selected Area based on Sunrise and Sunset.
+    Allows defining custom time offsets (in minutes) for each season.
+
+    INTEGRATION: Includes Workday Sensor logic. If today is a holiday or weekend (Workday Sensor = off),
+    the "Sleep-In Offset" is added to the Sunrise opening time.
+
+    NOTE: Because this uses dynamic time calculations, the automation triggers 3 hours
+    before the actual event and waits. This allows for negative offsets up to -180 minutes.
+  domain: automation
+  input:
+    target_area:
+      name: Target Area
+      description: The area containing the covers you want to control.
+      selector:
+        area:
+          entity:
+            domain: cover
+    season_sensor:
+      name: Season Sensor
+      description: The sensor entity from the Season integration (e.g., sensor.season).
+      default: sensor.season
+      selector:
+        entity:
+          domain: sensor
+          device_class: enum
+    workday_sensor:
+      name: Workday Sensor
+      description: The binary sensor from the Workday integration (on = workday, off = weekend/holiday).
+      default: binary_sensor.workday_sensor
+      selector:
+        entity:
+          domain: binary_sensor
+
+    # --- SLEEP IN SETTINGS ---
+    sleep_in_offset:
+      name: Sleep-In Offset (Weekends/Holidays)
+      description: >
+        Additional minutes to delay OPENING on weekends/holidays. 
+        Example: If Seasonal Offset is 0 and this is 120, blinds open 2 hours after sunrise on weekends.
+      default: 120
+      selector:
+        number:
+          min: 0
+          max: 300
+          step: 1
+          unit_of_measurement: minutes
+          mode: slider
+
+    # --- SPRING SETTINGS ---
+    spring_rise_offset:
+      name: Spring Sunrise Offset
+      description: Minutes to offset opening in Spring (negative = before sunrise, positive = after).
+      default: 30
+      selector: &offset_selector
+        number:
+          min: -120
+          max: 120
+          step: 1
+          unit_of_measurement: minutes
+          mode: slider
+    spring_set_offset:
+      name: Spring Sunset Offset
+      description: Minutes to offset closing in Spring (negative = before sunset, positive = after).
+      default: 0
+      selector: *offset_selector
+
+    # --- SUMMER SETTINGS ---
+    summer_rise_offset:
+      name: Summer Sunrise Offset
+      description: Minutes to offset opening in Summer (negative = before sunrise, positive = after).
+      default: 90
+      selector: *offset_selector
+    summer_set_offset:
+      name: Summer Sunset Offset
+      description: Minutes to offset closing in Summer (negative = before sunset, positive = after).
+      default: 0
+      selector: *offset_selector
+
+    # --- AUTUMN SETTINGS ---
+    autumn_rise_offset:
+      name: Autumn Sunrise Offset
+      description: Minutes to offset opening in Autumn (negative = before sunrise, positive = after).
+      default: 15
+      selector: *offset_selector
+    autumn_set_offset:
+      name: Autumn Sunset Offset
+      description: Minutes to offset closing in Autumn (negative = before sunset, positive = after).
+      default: 0
+      selector: *offset_selector
+
+    # --- WINTER SETTINGS ---
+    winter_rise_offset:
+      name: Winter Sunrise Offset
+      description: Minutes to offset opening in Winter (negative = before sunrise, positive = after).
+      default: 0
+      selector: *offset_selector
+    winter_set_offset:
+      name: Winter Sunset Offset
+      description: Minutes to offset closing in Winter (negative = before sunset, positive = after).
+      default: 0
+      selector: *offset_selector
+
+variables:
+  season_sensor: !input season_sensor
+  workday_sensor: !input workday_sensor
+  current_season: "{{ states(season_sensor) | lower }}"
+
+  # Capture inputs
+  sleep_in_add: !input sleep_in_offset
+  spring_rise: !input spring_rise_offset
+  spring_set: !input spring_set_offset
+  summer_rise: !input summer_rise_offset
+  summer_set: !input summer_set_offset
+  autumn_rise: !input autumn_rise_offset
+  autumn_set: !input autumn_set_offset
+  winter_rise: !input winter_rise_offset
+  winter_set: !input winter_set_offset
+
+  # 1. Determine the Seasonal Offset
+  seasonal_offset: >
+    {% if trigger.id == 't_sunrise' %}
+      {% if current_season == 'spring' %} {{ spring_rise }}
+      {% elif current_season == 'summer' %} {{ summer_rise }}
+      {% elif current_season == 'autumn' %} {{ autumn_rise }}
+      {% else %} {{ winter_rise }} {% endif %}
+    {% else %}
+      {% if current_season == 'spring' %} {{ spring_set }}
+      {% elif current_season == 'summer' %} {{ summer_set }}
+      {% elif current_season == 'autumn' %} {{ autumn_set }}
+      {% else %} {{ winter_set }} {% endif %}
+    {% endif %}
+
+  # 2. Determine Sleep-In Adder (Only applies to Sunrise AND Non-Workdays)
+  # Workday sensor 'on' = Workday. 'off' = Weekend/Holiday.
+  extra_sleep_offset: >
+    {% if trigger.id == 't_sunrise' and states(workday_sensor) == 'off' %}
+      {{ sleep_in_add | int }}
+    {% else %}
+      0
+    {% endif %}
+
+  # 3. Calculate Total Delay
+  # Automation triggers at -180 min (3 hours before).
+  # Delay = 180 + Seasonal Offset + Sleep-In Offset.
+  delay_seconds: "{{ (180 + (seasonal_offset | int) + (extra_sleep_offset | int)) * 60 }}"
+
+trigger:
+  - platform: sun
+    event: sunrise
+    offset: "-03:00:00"
+    id: t_sunrise
+  - platform: sun
+    event: sunset
+    offset: "-03:00:00"
+    id: t_sunset
+
+action:
+  # 1. Wait until the calculated time
+  - delay: "{{ delay_seconds }}"
+
+  # 2. Perform the action
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: t_sunrise
+        sequence:
+          - service: cover.open_cover
+            target:
+              area_id: !input target_area
+      - conditions:
+          - condition: trigger
+            id: t_sunset
+        sequence:
+          - service: cover.close_cover
+            target:
+              area_id: !input target_area
