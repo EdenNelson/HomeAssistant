@@ -6,8 +6,6 @@ blueprint:
     has been detected within the user-defined time period.
   domain: automation
   source_url: https://github.com/homeassistant/blueprint-examples
-
-blueprint:
   input:
     sensor_entity:
       name: Sensor Entity
