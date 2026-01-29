@@ -1,0 +1,100 @@
+blueprint:
+  name: Low battery level detection with life skew & notification for all battery sensors
+  description: >
+    Regularly test all sensors with 'battery' device-class for crossing a certain battery level threshold 
+    and if so execute an action. Includes a "life skew" feature to correct battery percentages for devices 
+    that die before reaching 0%. For example, if a device dies at 15%, set the life skew to 15% and when 
+    the sensor reports 15%, the notification will show the corrected value as 0% (effectively dead).
+  domain: automation
+  input:
+    threshold:
+      name: Battery warning level threshold
+      description: Battery sensors below threshold are assumed to be low-battery (as
+        well as binary battery sensors with value 'on').
+      default: 20
+      selector:
+        number:
+          min: 5.0
+          max: 100.0
+          unit_of_measurement: '%'
+          mode: slider
+          step: 5.0
+    life_skew:
+      name: Battery life skew (dead battery percentage)
+      description: >
+        The percentage at which batteries are considered "dead" for your devices. 
+        When a sensor reports this percentage, it will be shown as 0% in notifications.
+        For example, if your devices die at 15%, set this to 15. A sensor reporting 
+        20% will show as 5% corrected (20% - 15% = 5% remaining life).
+      default: 0
+      selector:
+        number:
+          min: 0.0
+          max: 50.0
+          unit_of_measurement: '%'
+          mode: slider
+          step: 1.0
+    time:
+      name: Time to test on
+      description: Test is run at configured time
+      default: '10:00:00'
+      selector:
+        time: {}
+    day:
+      name: Weekday to test on
+      description: 'Test is run at configured time either everyday (0) or on a given
+        weekday (1: Monday ... 7: Sunday)'
+      default: 0
+      selector:
+        number:
+          min: 0.0
+          max: 7.0
+          mode: slider
+          step: 1.0
+    exclude:
+      name: Excluded Sensors
+      description: Battery sensors (e.g. smartphone) to exclude from detection. Only entities are supported, devices must be expanded!
+      default: {entity_id: []}
+      selector:
+        target:
+          entity:
+            device_class: battery
+    actions:
+      name: Actions
+      description: >
+        Notifications or similar to be run. {{sensors}} is replaced with the names of sensors 
+        being low on battery. The corrected battery percentage (accounting for life skew) is shown 
+        in the notification.
+      selector:
+        action: {}
+  source_url: https://github.com/EdenNelson/HomeAssistant
+variables:
+  day: !input 'day'
+  threshold: !input 'threshold'
+  life_skew: !input 'life_skew'
+  exclude: !input 'exclude'
+  sensors: >-
+    {% set result = namespace(sensors=[]) %}
+    {% set skew = life_skew | int %}
+    {% for state in states.sensor | selectattr('attributes.device_class', '==', 'battery') %}
+      {% if 0 <= state.state | int(-1) < threshold | int and not state.entity_id in exclude.entity_id %}
+        {% set raw_battery = state.state | int %}
+        {% set corrected_battery = ((raw_battery - skew) | int) if raw_battery > skew else 0 %}
+        {% set result.sensors = result.sensors + [state.name ~ ' (Raw: ' ~ raw_battery ~ '%, Corrected: ' ~ corrected_battery ~ '%)'] %}
+      {% endif %}
+    {% endfor %}
+    {% for state in states.binary_sensor | selectattr('attributes.device_class', '==', 'battery') | selectattr('state', '==', 'on') %}
+      {% if not state.entity_id in exclude.entity_id %}
+        {% set result.sensors = result.sensors + [state.name ~ ' (Binary: Low Battery)'] %}
+      {% endif %}
+    {% endfor %}
+    {{result.sensors|join(', ')}}
+trigger:
+- platform: time
+  at: !input 'time'
+condition:
+- '{{ sensors != '''' and (day | int == 0 or day | int == now().isoweekday()) }}'
+action:
+- choose: []
+  default: !input 'actions'
+mode: single
