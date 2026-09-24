@@ -1,17 +1,20 @@
 blueprint:
-  name: 3D Printer Exhaust and Fan Controller
+  name: Multi-Printer Exhaust & Fan Controller
   description: >
-    Turns on air purifiers, fans, and/or switch-operated fans when a 3D printer starts printing.
-    Saves their current state. When the printer goes back to Idle, keeps them running 
-    for a cooldown period (default 15 mins) and then restores their exact prior status.
-    If HA restarts during a print and the saved state is lost, it falls back to setting fans to low.
+    Controls fans, purifiers, and switches across multiple 3D printers.
+    When any printer starts printing, saves current fan/switch states and boosts 
+    fans to 100%. Keeps fans running until ALL printers have returned to Idle for 
+    the cooldown period, then restores original states.
   domain: automation
   input:
-    printer_state:
-      name: 3D Printer State Entity
-      description: The sensor tracking your printer's status (e.g., sensor.octoprint_current_state).
+    printers:
+      name: 3D Printer State Entities
+      description: Select one or more state sensors for your printers.
       selector:
-        entity: {}
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
     fans:
       name: Fans & Air Purifiers
       description: Select fan entities to set to 100% when printing.
@@ -23,7 +26,7 @@ blueprint:
             - domain: fan
     switches:
       name: Switch-operated Fans
-      description: Select basic switch entities to turn on when printing.
+      description: Select switch entities to turn on when printing.
       default: []
       selector:
         entity:
@@ -32,7 +35,7 @@ blueprint:
             - domain: switch
     cooldown:
       name: Cooldown Duration
-      description: Time to keep fans running after the printer returns to Idle.
+      description: Time to keep fans running after ALL printers return to Idle.
       default: 15
       selector:
         number:
@@ -44,98 +47,111 @@ mode: single
 
 trigger:
   - platform: state
-    entity_id: !input printer_state
-    from: "Idle"
-    to: "Printing"
+    entity_id: !input printers
+
+condition:
+  - condition: template
+    # Only triggers the main script if at least one printer is currently printing
+    value_template: >-
+      {{ (printers_safe | map('states') | map('lower') | select('eq', 'printing') | list | length) > 0 }}
 
 variables:
-  fans_list: !input fans
-  switches_list: !input switches
+  printers_input: !input printers
+  fans_input: !input fans
+  switches_input: !input switches
   cooldown_time: !input cooldown
-  
-  # Ensure the inputs are formatted as lists
-  fans_safe: "{{ [fans_list] if fans_list is string else fans_list }}"
-  switches_safe: "{{ [switches_list] if switches_list is string else switches_list }}"
+
+  # Ensure inputs are handled cleanly as arrays
+  printers_safe: "{{ [printers_input] if printers_input is string else printers_input }}"
+  fans_safe: "{{ [fans_input] if fans_input is string else fans_input }}"
+  switches_safe: "{{ [switches_input] if switches_input is string else switches_input }}"
   all_entities: "{{ fans_safe + switches_safe }}"
-  
-  # A unique scene name used to store the snapshot
-  scene_id: "3d_printer_fans_snapshot"
+
+  scene_id: "multi_3d_printer_fans_snapshot"
 
 action:
-  # 1. Snapshot the exact current states of all devices
-  - alias: "Save the current state of all fans and switches"
+  # 1. Take snapshot of baseline room state (Only runs once when the automation first starts)
+  - alias: "Save initial state of fans and switches"
     if:
       - condition: template
         value_template: "{{ all_entities | length > 0 }}"
     then:
-      - service: scene.create
+      - action: scene.create
         data:
           scene_id: "{{ scene_id }}"
           snapshot_entities: "{{ all_entities }}"
 
-  # 2. Set Fans/Purifiers to 100%
+  # 2. Turn fans to 100% and switches ON
   - alias: "Turn fans to 100%"
     if:
       - condition: template
         value_template: "{{ fans_safe | length > 0 }}"
     then:
-      - service: fan.turn_on
+      - action: fan.turn_on
         target:
           entity_id: "{{ fans_safe }}"
         data:
           percentage: 100
 
-  # 3. Turn on standard switches
   - alias: "Turn switches on"
     if:
       - condition: template
         value_template: "{{ switches_safe | length > 0 }}"
     then:
-      - service: switch.turn_on
+      - action: switch.turn_on
         target:
           entity_id: "{{ switches_safe }}"
 
-  # 4. Wait for the printer to finish
-  - alias: "Wait for printing to finish (return to Idle)"
-    wait_for_trigger:
-      - platform: state
-        entity_id: !input printer_state
-        to: "Idle"
+  # 3. Main printer monitoring and cooldown loop
+  - alias: "Wait for all printers to idle and complete cooldown"
+    repeat:
+      sequence:
+        # Step A: Pause execution until 0 printers are in 'printing' state
+        - wait_for_trigger:
+            - platform: template
+              value_template: >-
+                {{ (printers_safe | map('states') | map('lower') | select('eq', 'printing') | list | length) == 0 }}
 
-  # 5. Wait out the cooldown period
-  - alias: "Cooldown timer"
-    delay:
-      minutes: "{{ cooldown_time }}"
+        # Step B: Run cooldown timer, but watch for any printer starting up again
+        - wait_for_trigger:
+            - platform: template
+              value_template: >-
+                {{ (printers_safe | map('states') | map('lower') | select('eq', 'printing') | list | length) > 0 }}
+              id: printer_restarted
+          timeout:
+            minutes: "{{ cooldown_time }}"
 
-  # 6. Restore states (or apply fallback)
+      until:
+        # Loop completes when the 15-min timer times out without a printer restarting
+        - condition: template
+          value_template: "{{ wait.trigger is none }}"
+
+  # 4. Restore initial state (or apply fallback if Home Assistant restarted)
   - alias: "Restore prior states or fallback to Low"
     if:
       - condition: template
-        # Verifies the scene still exists in HA memory
         value_template: "{{ states('scene.' ~ scene_id) not in ['unknown', 'unavailable'] }}"
     then:
-      - service: scene.turn_on
+      - action: scene.turn_on
         target:
           entity_id: "scene.{{ scene_id }}"
     else:
-      # --- FALLBACK PROTOCOL ---
-      # Runs if HA restarted during the print, losing the scene memory.
       - alias: "Fallback: Set fans to low (33%)"
         if:
           - condition: template
             value_template: "{{ fans_safe | length > 0 }}"
         then:
-          - service: fan.turn_on
+          - action: fan.turn_on
             target:
               entity_id: "{{ fans_safe }}"
             data:
               percentage: 33
-              
+
       - alias: "Fallback: Turn off switches"
         if:
           - condition: template
             value_template: "{{ switches_safe | length > 0 }}"
         then:
-          - service: switch.turn_off
+          - action: switch.turn_off
             target:
               entity_id: "{{ switches_safe }}"
