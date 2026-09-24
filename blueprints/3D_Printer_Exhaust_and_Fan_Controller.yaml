@@ -1,0 +1,141 @@
+blueprint:
+  name: 3D Printer Exhaust and Fan Controller
+  description: >
+    Turns on air purifiers, fans, and/or switch-operated fans when a 3D printer starts printing.
+    Saves their current state. When the printer goes back to Idle, keeps them running 
+    for a cooldown period (default 15 mins) and then restores their exact prior status.
+    If HA restarts during a print and the saved state is lost, it falls back to setting fans to low.
+  domain: automation
+  input:
+    printer_state:
+      name: 3D Printer State Entity
+      description: The sensor tracking your printer's status (e.g., sensor.octoprint_current_state).
+      selector:
+        entity: {}
+    fans:
+      name: Fans & Air Purifiers
+      description: Select fan entities to set to 100% when printing.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: fan
+    switches:
+      name: Switch-operated Fans
+      description: Select basic switch entities to turn on when printing.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: switch
+    cooldown:
+      name: Cooldown Duration
+      description: Time to keep fans running after the printer returns to Idle.
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 120
+          unit_of_measurement: minutes
+
+mode: single
+
+trigger:
+  - platform: state
+    entity_id: !input printer_state
+    from: "Idle"
+    to: "Printing"
+
+variables:
+  fans_list: !input fans
+  switches_list: !input switches
+  cooldown_time: !input cooldown
+  
+  # Ensure the inputs are formatted as lists
+  fans_safe: "{{ [fans_list] if fans_list is string else fans_list }}"
+  switches_safe: "{{ [switches_list] if switches_list is string else switches_list }}"
+  all_entities: "{{ fans_safe + switches_safe }}"
+  
+  # A unique scene name used to store the snapshot
+  scene_id: "3d_printer_fans_snapshot"
+
+action:
+  # 1. Snapshot the exact current states of all devices
+  - alias: "Save the current state of all fans and switches"
+    if:
+      - condition: template
+        value_template: "{{ all_entities | length > 0 }}"
+    then:
+      - service: scene.create
+        data:
+          scene_id: "{{ scene_id }}"
+          snapshot_entities: "{{ all_entities }}"
+
+  # 2. Set Fans/Purifiers to 100%
+  - alias: "Turn fans to 100%"
+    if:
+      - condition: template
+        value_template: "{{ fans_safe | length > 0 }}"
+    then:
+      - service: fan.turn_on
+        target:
+          entity_id: "{{ fans_safe }}"
+        data:
+          percentage: 100
+
+  # 3. Turn on standard switches
+  - alias: "Turn switches on"
+    if:
+      - condition: template
+        value_template: "{{ switches_safe | length > 0 }}"
+    then:
+      - service: switch.turn_on
+        target:
+          entity_id: "{{ switches_safe }}"
+
+  # 4. Wait for the printer to finish
+  - alias: "Wait for printing to finish (return to Idle)"
+    wait_for_trigger:
+      - platform: state
+        entity_id: !input printer_state
+        to: "Idle"
+
+  # 5. Wait out the cooldown period
+  - alias: "Cooldown timer"
+    delay:
+      minutes: "{{ cooldown_time }}"
+
+  # 6. Restore states (or apply fallback)
+  - alias: "Restore prior states or fallback to Low"
+    if:
+      - condition: template
+        # Verifies the scene still exists in HA memory
+        value_template: "{{ states('scene.' ~ scene_id) not in ['unknown', 'unavailable'] }}"
+    then:
+      - service: scene.turn_on
+        target:
+          entity_id: "scene.{{ scene_id }}"
+    else:
+      # --- FALLBACK PROTOCOL ---
+      # Runs if HA restarted during the print, losing the scene memory.
+      - alias: "Fallback: Set fans to low (33%)"
+        if:
+          - condition: template
+            value_template: "{{ fans_safe | length > 0 }}"
+        then:
+          - service: fan.turn_on
+            target:
+              entity_id: "{{ fans_safe }}"
+            data:
+              percentage: 33
+              
+      - alias: "Fallback: Turn off switches"
+        if:
+          - condition: template
+            value_template: "{{ switches_safe | length > 0 }}"
+        then:
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ switches_safe }}"
